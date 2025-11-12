@@ -2,31 +2,75 @@ import random
 import re
 from datetime import datetime
 from abc import ABC, abstractmethod
+import csv
+import os
 
 class Account(ABC):
     next_account_id = 1
+    
     def __init__(self, id, account_type, balance):
         self.id = id
         self.account_type = account_type
-        self.balance = balance
+        self.balance = float(balance)
         self.transactions = []
 
     def save_account_info(self):
         try:
-           with open(f"{self.id}.txt", "a+") as file:
-               if isinstance(self, SavingsAccount):
-                  file.write(f"{self.id},{self.account_type},{self.balance}\n")
-               elif isinstance(self, CheckingAccount):
-                  file.write(f"{self.id},{self.account_type},{self.balance}\n")
-               elif isinstance(self, LoanAccount):
-                  file.write(f"{self.id},{self.account_type},{self.balance}\n")
-        #IOError is basically a error of input & output ocuuring for many reasons
-        except IOError as e:
-            print(f"Error occurred while saving account info: {e}")
-        #Exception is a base class which contains all types of exception
+            # Read existing accounts
+            accounts = []
+            if os.path.exists("accounts.csv"):
+                with open("accounts.csv", "r", newline='') as file:
+                    reader = csv.DictReader(file)
+                    accounts = list(reader)
+            
+            # Update or add account with ALL details
+            account_found = False
+            for acc in accounts:
+                if acc['account_id'] == self.id and acc['account_type'] == self.account_type:
+                    acc['balance'] = str(self.balance)
+                    # ADDED: Extra fields based on account type
+                    if isinstance(self, SavingsAccount):
+                        acc['interest_rate'] = str(self.interest_rate)
+                    elif isinstance(self, CheckingAccount):
+                        acc['credit_limit'] = str(self.credit_limit)
+                        acc['overdraft_fee'] = str(self.overdraft_fee)
+                    elif isinstance(self, LoanAccount):
+                        acc['interest_rate'] = str(self.interest_rate)
+                    account_found = True
+                    break
+            
+            if not account_found:
+                new_account = {
+                    'account_id': self.id,
+                    'account_type': self.account_type,
+                    'balance': str(self.balance)
+                }
+                # ADDED: Extra fields
+                if isinstance(self, SavingsAccount):
+                    new_account['interest_rate'] = str(self.interest_rate)
+                elif isinstance(self, CheckingAccount):
+                    new_account['credit_limit'] = str(self.credit_limit)
+                    new_account['overdraft_fee'] = str(self.overdraft_fee)
+                elif isinstance(self, LoanAccount):
+                    new_account['interest_rate'] = str(self.interest_rate)
+                
+                accounts.append(new_account)
+            
+            # Write back to CSV with ALL fields
+            with open("accounts.csv", "w", newline='') as file:
+                # DYNAMIC FIELDNAMES - sab fields include karo
+                fieldnames = ['account_id', 'account_type', 'balance', 'interest_rate', 'credit_limit', 'overdraft_fee']
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                writer.writeheader()
+                for acc in accounts:
+                    # Ensure all fields have values
+                    for field in fieldnames:
+                        if field not in acc:
+                            acc[field] = ''  # Empty for missing fields
+                    writer.writerow(acc)
+                    
         except Exception as e:
-            print(f"An error occurred: {e}")
-
+            print(f"Error saving account info: {e}")
 
     def deposit(self, amount):
         try:
@@ -34,19 +78,50 @@ class Account(ABC):
         except ValueError:
             print("Please Enter amount in digits")
             return
+        
         self.balance += amount
         self.save_account_info()
-        transaction = f"Deposited: {amount}"
-        self.transactions.append(transaction)
-        with open("Trasaction_history.txt", "a") as f:
-            f.write(f"{self.id} deposited {amount} rupees on ({datetime.now()})\n")
+        
+        # Save transaction
+        transaction_data = {
+            'account_id': self.id,
+            'transaction_type': 'deposit',
+            'amount': amount,
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'balance_after': self.balance
+        }
+        self.save_transaction(transaction_data)
+        print(f"Deposited {amount} successfully. New balance: {self.balance}")
 
     @abstractmethod
     def withdraw(self, amount):
         pass
 
-    def add_transaction(self, transaction):
-        self.transactions.append(transaction)
+    def save_transaction(self, transaction_data):
+        try:
+            file_exists = os.path.exists("transactions.csv")
+            
+            # COMPLETE FIELDNAMES - sab possible fields
+            fieldnames = [
+                'account_id', 'transaction_type', 'amount', 'timestamp', 
+                'balance_after', 'interest_earned', 'overdraft_fee', 
+                'loan_duration', 'related_account'
+            ]
+            
+            with open("transactions.csv", "a", newline='') as file:
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                
+                if not file_exists:
+                    writer.writeheader()
+                
+                # Ensure all fields are present in transaction_data
+                for field in fieldnames:
+                    if field not in transaction_data:
+                        transaction_data[field] = ''
+                
+                writer.writerow(transaction_data)
+        except Exception as e:
+            print(f"Error saving transaction: {e}")
 
     def balance_enquiry(self):
         print(f"Account Type: {self.account_type}")
@@ -54,114 +129,181 @@ class Account(ABC):
 
     def transfer_funds(self, recipient_account, amount):
         try:
+            amount = float(amount)
             if self.balance >= amount:
                 self.balance -= amount
                 recipient_account.balance += amount
+                
                 self.save_account_info()
                 recipient_account.save_account_info()
-                transaction = f"Transferred: {amount} to {recipient_account.id}"
-                self.transactions.append(transaction)
-                recipient_account.transactions.append(transaction)
-                with open("Trasaction_history.txt", "a") as f:
-                    f.write(f"{self.id} transferred {amount} rupees to {recipient_account.id} on ({datetime.now()})\n")
+                
+                # Save transactions for both accounts
+                self_transaction = {
+                    'account_id': self.id,
+                    'transaction_type': 'transfer_out',
+                    'amount': amount,
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'balance_after': self.balance,
+                    'related_account': recipient_account.id
+                }
+                recipient_transaction = {
+                    'account_id': recipient_account.id,
+                    'transaction_type': 'transfer_in',
+                    'amount': amount,
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'balance_after': recipient_account.balance,
+                    'related_account': self.id
+                }
+                
+                self.save_transaction(self_transaction)
+                recipient_account.save_transaction(recipient_transaction)
+                
+                print(f"Transferred {amount} to {recipient_account.id} successfully!")
                 return True
             else:
-                raise ValueError("Insufficient balance.")
-        except:
-            print("Insufficient balance.")
+                print("Insufficient balance.")
+                return False
+        except Exception as e:
+            print(f"Error during transfer: {e}")
             return False
-
 
 class CheckingAccount(Account):
     def __init__(self, id, balance):
         super().__init__(id, "Checking", balance)
-        self.credit_limit =(self.balance*0.5)*(-1)
-        self.overdraft_fee= abs(self.balance) * 0.02
-
+        self.credit_limit = (self.balance * 0.5) * (-1)
+        self.overdraft_fee = abs(self.balance) * 0.02
 
     def withdraw(self, amount):
         try:
+            amount = float(amount)
             if self.balance - amount >= self.credit_limit:
-                if self.balance - amount> 0:
+                if self.balance - amount >= 0:
                     self.balance -= amount
-                    transaction = f"Withdrawn: {amount}"
-                    self.transactions.append(transaction)
-                    print("Amount withdrawn successfully!")
-                    self.save_account_info()
-                    with open("Trasaction_history.txt", "a") as f:
-                        f.write(f"{self.id} withdrawed {amount} rupees on ({datetime.now()})\n")
-                elif self.balance - amount < 0:
-                    self.balance -= (self.overdraft_fee + amount)
-                    transaction = f"overdraft fee deducted: {self.overdraft_fee}"
-                    self.transactions.append(transaction)
-                    self.save_account_info()
-                    with open("Trasaction_history.txt", "a") as f:
-                        f.write(f"{self.id} withdrawed {amount} rupees on ({datetime.now()})\n")
-        #as (e) means it prints the actual error rather than the user defined message
+                    transaction_data = {
+                        'account_id': self.id,
+                        'transaction_type': 'withdrawal',
+                        'amount': amount,
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'balance_after': self.balance
+                    }
+                    print(f"Withdrew {amount} successfully!")
+                else:
+                    # Overdraft case
+                    total_deduction = amount + self.overdraft_fee
+                    self.balance -= total_deduction
+                    transaction_data = {
+                        'account_id': self.id,
+                        'transaction_type': 'withdrawal_overdraft',
+                        'amount': amount,
+                        'overdraft_fee': self.overdraft_fee,
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'balance_after': self.balance
+                    }
+                    print(f"Withdrew {amount} with overdraft fee {self.overdraft_fee}")
+                
+                self.save_transaction(transaction_data)
+                self.save_account_info()
+            else:
+                print("Insufficient funds - exceeds credit limit")
         except ValueError as e:
-            print(e)
-
+            print(f"Invalid amount: {e}")
 
 class SavingsAccount(Account):
     def __init__(self, id, balance):
         super().__init__(id, "Savings", balance)
-        self.interest_rate = (self.balance*0.1)
+        self.interest_rate = 0.02  # 2% interest
 
     def deposit(self, amount):
         try:
-            self.balance += (amount+self.interest_rate)
+            amount = float(amount)
+            interest_earned = amount * self.interest_rate
+            self.balance += (amount + interest_earned)
+            
+            transaction_data = {
+                'account_id': self.id,
+                'transaction_type': 'deposit_with_interest',
+                'amount': amount,
+                'interest_earned': interest_earned,
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'balance_after': self.balance
+            }
+            self.save_transaction(transaction_data)
             self.save_account_info()
-            transaction = f"Deposited: {amount}"
-            self.transactions.append(transaction)
-            with open("Trasaction_history.txt", "a") as f:
-                f.write(f"{self.id} deposited {amount} rupees on ({datetime.now()})\n")
+            print(f"Deposited {amount} with interest {interest_earned}. New balance: {self.balance}")
         except ValueError as e:
-            print(e)
+            print(f"Invalid amount: {e}")
 
     def withdraw(self, amount):
         try:
+            amount = float(amount)
             if self.balance >= amount:
                 self.balance -= amount
+                transaction_data = {
+                    'account_id': self.id,
+                    'transaction_type': 'withdrawal',
+                    'amount': amount,
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'balance_after': self.balance
+                }
+                self.save_transaction(transaction_data)
                 self.save_account_info()
-                transaction = f"Withdrawn: {amount}"
-                self.transactions.append(transaction)
-                with open("Trasaction_history.txt", "a") as f:
-                    f.write(f"{self.id} withdrawed {amount} rupees on ({datetime.now()})\n")
+                print(f"Withdrew {amount} successfully!")
                 return True
             else:
                 print("Insufficient balance.")
                 return False
         except ValueError as e:
-            print(e)
-
+            print(f"Invalid amount: {e}")
+            return False
 
 class LoanAccount(Account):
     def __init__(self, id, balance):
         super().__init__(id, "Loan", balance)
-        # self.loanDuration = int(input("Enter current month of loan taken: "))
+        self.interest_rate = 0.08  # 8% annual interest
+
     def withdraw(self, amount):
         try:
+            amount = float(amount)
             if self.balance >= amount:
-                loanDuration = int(input("Enter current month of loan taken: "))
-                intrestRate = self.balance*(loanDuration // 0.08)
-                self.balance -= round(amount + intrestRate)
-                self.save_account_info()
-                transaction = f"Withdrawn: {amount}"
-                self.transactions.append(transaction)
-                with open("Trasaction_history.txt", "a") as f:
-                    f.write(f"{self.id} withdrawed {amount} rupees on ({datetime.now()})\n")
-                return True
+                try:
+                    loan_duration = int(input("Enter loan duration in months: "))
+                    if loan_duration <= 0:
+                        print("Loan duration must be positive")
+                        return False
+                    
+                    monthly_interest_rate = self.interest_rate / 12
+                    total_interest = amount * monthly_interest_rate * loan_duration
+                    total_amount = amount + total_interest
+                    
+                    if self.balance >= total_amount:
+                        self.balance -= total_amount
+                        
+                        transaction_data = {
+                            'account_id': self.id,
+                            'transaction_type': 'loan_disbursement',
+                            'amount': amount,
+                            'interest_charged': total_interest,
+                            'loan_duration': loan_duration,
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'balance_after': self.balance
+                        }
+                        self.save_transaction(transaction_data)
+                        self.save_account_info()
+                        
+                        print(f"Loan of {amount} disbursed! Total with interest: {total_amount}")
+                        return True
+                    else:
+                        print("Insufficient balance for loan with interest.")
+                        return False
+                except ValueError:
+                    print("Please enter valid number for loan duration.")
+                    return False
             else:
                 print("Insufficient balance.")
                 return False
         except ValueError as e:
-            if "Insufficient funds" in str(e):
-                print("Insufficient balance.")
-            else:
-                print(e)
-        #TypeError when the type of input is not match with the condition
-        except TypeError as e:
-            print("LoanDuration required an integer value.")
+            print(f"Invalid amount: {e}")
+            return False
 
 class Customer:
     def __init__(self, id, password, first_name, last_name, address):
@@ -174,12 +316,21 @@ class Customer:
 
     def save_customer_info(self):
         try:
-            with open("customerinfo.txt", "a") as file:
-                file.write(f"{self.id},{self.password},{self.first_name},{self.last_name},{self.address}\n")
-        except IOError as e:
-            print(f"Error occurred while saving customer info: {e}")
+            file_exists = os.path.exists("customers.csv")
+            with open("customers.csv", "a", newline='') as file:
+                fieldnames = ['customer_id', 'password', 'first_name', 'last_name', 'address']
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow({
+                    'customer_id': self.id,
+                    'password': self.password,
+                    'first_name': self.first_name,
+                    'last_name': self.last_name,
+                    'address': self.address
+                })
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"Error saving customer info: {e}")
 
     def add_account(self, account):
         self.accounts.append(account)
@@ -208,457 +359,452 @@ class Customer:
             return account.withdraw(amount)
         return False
 
-
 class BankingSystem:
     def __init__(self):
         self.customers = []
-        self.admin_password = self.load_admin_password("admin_password.txt")
+        self.admin_password = self.load_admin_password()
 
-    def load_admin_password(self, filename):
+    def load_admin_password(self):
         try:
-            with open(filename, "r") as file:
-                return file.read().strip()
-        #FileNotFoundError when the required file doesn't exist or the directory is different
-        except FileNotFoundError:
-            return None
+            if os.path.exists("admin.csv"):
+                with open("admin.csv", "r") as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        return row['password']
+            # Default password agar file nahi hai
+            return "admin123"
+        except:
+            return "admin123"
 
     def change_admin_password(self):
-        n = input("\nEnter previous password: ")
-        with open("admin_password.txt", "r") as f:
-            if n == f.read():
-                o = input("Set new password: ")
-                with open("admin_password.txt", "w") as g:
-                    g.write(o)
-            else:
-                print("Invalid Password!!")
-                self.change_admin_password()
-
+        current_pwd = input("\nEnter current admin password: ")
+        if current_pwd == self.admin_password:
+            new_pwd = input("Enter new admin password: ")
+            try:
+                with open("admin.csv", "w", newline='') as file:
+                    fieldnames = ['password']
+                    writer = csv.DictWriter(file, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerow({'password': new_pwd})
+                self.admin_password = new_pwd
+                print("Admin password changed successfully!")
+            except Exception as e:
+                print(f"Error changing password: {e}")
+        else:
+            print("Invalid current password!")
 
     def load_customers_from_file(self):
-        with open("customerinfo.txt", "r") as file:
-            for line in file:
-                id, password, first_name, last_name, address = line.strip().split(",")
-                customer = Customer(id, password, first_name, last_name, address)
-                self.customers.append(customer)
-                self.load_customer_accounts(customer)
-
+        try:
+            if os.path.exists("customers.csv"):
+                with open("customers.csv", "r", newline='') as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        customer = Customer(
+                            row['customer_id'],
+                            row['password'],
+                            row['first_name'],
+                            row['last_name'],
+                            row['address']
+                        )
+                        self.customers.append(customer)
+                        self.load_customer_accounts(customer)
+        except Exception as e:
+            print(f"Error loading customers: {e}")
 
     def load_customer_accounts(self, customer):
-            with open(f"{customer.id}.txt", "r") as file:
-                for line in file:
-                    k = line.strip().split(",")
-                    id, account_type, balance = k[0],k[1],k[2]
-                    if account_type == "Checking":
-                        account = CheckingAccount(id, float(balance))
-                    elif account_type == "Savings":
-                        account = SavingsAccount(id, float(balance))
-                    elif account_type == "Loan":
-                        account = LoanAccount(id, float(balance))
-                    customer.add_account(account)
-
-
-    def save_customer_accounts(self, customer):
         try:
-            with open(f"{customer.id}.txt", "a") as file:
-                for account in customer.accounts:
-                   if isinstance(account, CheckingAccount):
-                      file.write(f"{account.id},Checking,{account.balance},{account.credit_limit}\n")
-                   elif isinstance(account, SavingsAccount):
-                      file.write(f"{account.id},Savings,{account.balance},{account.interest_rate}\n")
-                   elif isinstance(account, LoanAccount):
-                      file.write(f"{account.id},Loan,{account.balance}\n")
-                      account.save_account_info()
-        except FileNotFoundError:
-            pass
+            if os.path.exists("accounts.csv"):
+                with open("accounts.csv", "r", newline='') as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        if row['account_id'] == customer.id:
+                            balance = float(row['balance'])
+                            if row['account_type'] == "Checking":
+                                account = CheckingAccount(customer.id, balance)
+                                if row['credit_limit']:
+                                    account.credit_limit = float(row['credit_limit'])
+                                if row['overdraft_fee']:
+                                    account.overdraft_fee = float(row['overdraft_fee'])
+                            elif row['account_type'] == "Savings":
+                                account = SavingsAccount(customer.id, balance)
+                                if row['interest_rate']:
+                                    account.interest_rate = float(row['interest_rate'])
+                            elif row['account_type'] == "Loan":
+                                account = LoanAccount(customer.id, balance)
+                                if row['interest_rate']:
+                                    account.interest_rate = float(row['interest_rate'])
+                            customer.add_account(account)
         except Exception as e:
-            print(e)
-            print("Something went wrong. Please try again.")
+            print(f"Error loading accounts for customer {customer.id}: {e}")
 
-    def customer_login(self, ID, PSword):
+    def customer_login(self, customer_id, password):
         self.load_customers_from_file()
         for customer in self.customers:
-            if customer.id == ID and customer.password == PSword:
+            if customer.id == customer_id and customer.password == password:
                 return customer
         return None
 
     def admin_login(self, password):
-        try:
-           if password == self.admin_password:
-              return True
-           return False
-        except Exception as e:
-           print(f"An error occurred during admin login: {e}")
-
+        return password == self.admin_password
 
     def create_customer(self, password, first_name, last_name, address):
         try:
-           id =random.randint(100,999)+random.randint(1000,9999)+ random.randint(1000000,9999999)
-           print(f'your Account ID is : {id}')
-           customer = Customer(id, password, first_name, last_name, address)
-           # Check password length and digit presence
-           if len(password) < 6 or not re.search(r'\d', password):
-               print("Password must be at least 6 characters long and contain a digit.")
-               return False
-           self.customers.append(customer)
-           Customer.save_customer_info(customer)
-           f = open(f"{id}.txt", "w")
-           f.close()
-           # self.prompt_account_type(customer)
-           return True
+            # Password validation
+            if len(password) < 6 or not re.search(r'\d', password):
+                print("Password must be at least 6 characters long and contain a digit.")
+                return False
+            
+            # Generate unique ID
+            customer_id = str(random.randint(100, 999) + random.randint(1000, 9999) + random.randint(1000000, 9999999))
+            print(f'Your Customer ID is: {customer_id}')
+            
+            customer = Customer(customer_id, password, first_name, last_name, address)
+            self.customers.append(customer)
+            customer.save_customer_info()
+            
+            print("Customer registered successfully!")
+            return True
 
         except Exception as e:
-           print(f"An error occurred while creating customer: {e}")
+            print(f"Error creating customer: {e}")
+            return False
 
     def prompt_account_type(self, customer):
         try:
-            print("Select an account type:")
+            print("\nSelect account type:")
             print("1. Checking Account")
-            print("2. Savings Account")
+            print("2. Savings Account") 
             print("3. Loan Account")
-            choice = input("Enter your choice: ")
+            choice = input("Enter your choice (1-3): ")
+            
             if choice == "1":
-               self.create_checking_account(customer)
+                self.create_checking_account(customer)
             elif choice == "2":
-               self.create_savings_account(customer)
+                self.create_savings_account(customer)
             elif choice == "3":
-               self.create_loan_account(customer)
+                self.create_loan_account(customer)
             else:
-               print("Invalid choice.")
+                print("Invalid choice!")
         except Exception as e:
-             print(f"An error occurred while prompting account type: {e}")
+            print(f"Error: {e}")
 
     def create_checking_account(self, customer):
         try:
-           balance = float(input("Enter initial balance: "))
-           account = CheckingAccount(customer.id, balance)
-           account.save_account_info()
-           customer.accounts.append(account)
-           print("Checking account created successfully.")
+            balance = float(input("Enter initial balance: "))
+            account = CheckingAccount(customer.id, balance)
+            account.save_account_info()
+            customer.accounts.append(account)
+            print("Checking account created successfully!")
         except ValueError:
-           print("Invalid input. Please enter a valid balance.")
+            print("Please enter valid amount!")
         except Exception as e:
-           print(f"An error occurred while creating checking account: {e}")
+            print(f"Error creating checking account: {e}")
 
     def create_savings_account(self, customer):
         try:
-           balance = float(input("Enter initial balance: "))
-           account = SavingsAccount(customer.id, balance)
-           account.save_account_info()
-           customer.accounts.append(account)
-           print("Savings account created successfully.")
+            balance = float(input("Enter initial balance: "))
+            account = SavingsAccount(customer.id, balance)
+            account.save_account_info()
+            customer.accounts.append(account)
+            print("Savings account created successfully!")
         except ValueError:
-           print("Invalid input. Please enter a valid balance.")
+            print("Please enter valid amount!")
         except Exception as e:
-           print(f"An error occurred while creating savings account: {e}")
+            print(f"Error creating savings account: {e}")
 
     def create_loan_account(self, customer):
         try:
-           balance = float(input("Enter initial balance: "))
-           account = LoanAccount(customer.id, balance)
-           account.save_account_info()
-           customer.accounts.append(account)
-           print("Loan account created successfully.")
+            balance = float(input("Enter initial balance: "))
+            account = LoanAccount(customer.id, balance)
+            account.save_account_info()
+            customer.accounts.append(account)
+            print("Loan account created successfully!")
         except ValueError:
-           print("Invalid input. Please enter a valid balance.")
+            print("Please enter valid amount!")
         except Exception as e:
-           print(f"An error occurred while creating loan account: {e}")
+            print(f"Error creating loan account: {e}")
 
     def print_all_customers_info(self):
         try:
-           print("All Customers Information")
-           for customer in self.customers:
-               print(f"Account ID: {customer.id}")
-               print(f"Name: {customer.first_name} {customer.last_name}")
-               print(f"Address: {customer.address}")
-               print("Accounts:")
-               for account in customer.accounts:
-                   if isinstance(account, CheckingAccount):
-                      print(f"- Account Type: Checking")
-                      print(f"  Balance: {account.balance}")
-                      print(f"  Credit Limit: {account.credit_limit}")
-                   elif isinstance(account, SavingsAccount):
-                      print(f"- Account Type: Savings")
-                      print(f"  Balance: {account.balance}")
-                      print(f"  Interest Rate: 10%")
-                   elif isinstance(account, LoanAccount):
-                      print(f"- Account Type: Loan")
-                      print(f"  Balance: {account.balance}")
-                      print(f"  Interest Rate: 8% with respect to loan duration")
-                      print(f"  Loan Duration: maximum 6 months")
+            print("\n" + "="*60)
+            print("ALL CUSTOMERS INFORMATION")
+            print("="*60)
+            
+            if not self.customers:
+                print("No customers found!")
+                return
+                
+            for customer in self.customers:
+                print(f"\nCustomer ID: {customer.id}")
+                print(f"Name: {customer.first_name} {customer.last_name}")
+                print(f"Address: {customer.address}")
+                print("Accounts:")
+                
+                if customer.accounts:
+                    for account in customer.accounts:
+                        if isinstance(account, CheckingAccount):
+                            print(f"  - Checking Account: Balance: {account.balance}, Credit Limit: {account.credit_limit}")
+                        elif isinstance(account, SavingsAccount):
+                            print(f"  - Savings Account: Balance: {account.balance}, Interest Rate: {account.interest_rate*100}%")
+                        elif isinstance(account, LoanAccount):
+                            print(f"  - Loan Account: Balance: {account.balance}, Interest Rate: {account.interest_rate*100}%")
+                else:
+                    print("  No accounts")
+                print("-" * 40)
+                
         except Exception as e:
-           print(f"An error occurred while printing customer information: {e}")
+            print(f"Error displaying customers: {e}")
 
-    def select_customer_by_username(self, id):
+    def select_customer_by_id(self, customer_id):
+        for customer in self.customers:
+            if customer.id == customer_id:
+                return customer
+        return None
+
+    def view_transaction_history(self, account_id=None):
         try:
-           for customer in self.customers:
-              if customer.id == id:
-                 return customer
-           return None
+            if not os.path.exists("transactions.csv"):
+                print("No transactions found!")
+                return
+                
+            with open("transactions.csv", "r", newline='') as file:
+                reader = csv.DictReader(file)
+                transactions = list(reader)
+                
+            if not transactions:
+                print("No transactions found!")
+                return
+                
+            print("\n" + "="*80)
+            print("TRANSACTION HISTORY")
+            print("="*80)
+            
+            for transaction in transactions:
+                if account_id is None or transaction['account_id'] == account_id:
+                    print(f"Account: {transaction['account_id']} | "
+                          f"Type: {transaction['transaction_type']} | "
+                          f"Amount: {transaction['amount']} | "
+                          f"Time: {transaction['timestamp']}")
+                    if transaction['interest_earned'] and float(transaction['interest_earned']) > 0:
+                        print(f"  Interest Earned: {transaction['interest_earned']}")
+                    if transaction['overdraft_fee'] and float(transaction['overdraft_fee']) > 0:
+                        print(f"  Overdraft Fee: {transaction['overdraft_fee']}")
+                    if transaction['loan_duration']:
+                        print(f"  Loan Duration: {transaction['loan_duration']} months")
+                    if transaction['related_account']:
+                        print(f"  Related Account: {transaction['related_account']}")
+                    print("-" * 50)
+                    
         except Exception as e:
-           print(e)
+            print(f"Error viewing transactions: {e}")
 
-# Helper function to select an account from a customer's accounts list
+# Helper function to select account
 def select_account(customer):
     if not customer.accounts:
-        print("No accounts found.")
+        print("No accounts found for this customer!")
         return None
 
-    print("Select an account:")
+    print("\nSelect an account:")
     for i, account in enumerate(customer.accounts):
-        print(f"{i+1}. Account Type: {account.account_type}")
-        print(f"   Balance: {account.balance}")
+        if isinstance(account, CheckingAccount):
+            print(f"{i+1}. Checking Account - Balance: {account.balance}")
+        elif isinstance(account, SavingsAccount):
+            print(f"{i+1}. Savings Account - Balance: {account.balance}")
+        elif isinstance(account, LoanAccount):
+            print(f"{i+1}. Loan Account - Balance: {account.balance}")
+    
     try:
         choice = int(input("Enter account number: ")) - 1
+        if 0 <= choice < len(customer.accounts):
+            return customer.accounts[choice]
+        else:
+            print("Invalid account number!")
+            return None
     except ValueError:
-        print("Please enter a valid account number.")
+        print("Please enter a valid number!")
         return None
 
-    if 0 <= choice < len(customer.accounts):
-        return customer.accounts[choice]
-    else:
-        print("Invalid account number.")
-        return None
-
-def pretty_print_interface(func):
-    def wrapper(*args, **kwargs):
-        print("\n=========================================================================================\n=========================================================================================")
-        func(*args, **kwargs)
-        print("=========================================================================================\n=========================================================================================\n")
-
-    return wrapper
-
-def pretty(func):
-    def wrapper(*args, **kwargs):
-        print("╔═══════════════════════════════════════════╗")
-        print("║             CUSTOMER INTERFACE            ║")
-        print("╠═══════════════════════════════════════════╣")
-        print("╚═══════════════════════════════════════════╝")
-        func(*args, **kwargs)
-        print()
-    return wrapper
-
+# Decorators for UI
 def pretty_print(func):
     def wrapper(*args, **kwargs):
-        print("╭───────────────────────────────────────╮")
-        print("│         WELCOME TO OUR BANK           │")
-        print("│                                       │")
-        print("╰───────────────────────────────────────╯")
+        print("\n╔═══════════════════════════════════════════╗")
+        print("║           ONLINE BANKING SYSTEM           ║")
+        print("╚═══════════════════════════════════════════╝")
         func(*args, **kwargs)
-        print('\n=========================================================================================\n')
-
     return wrapper
 
+def pretty_customer(func):
+    def wrapper(*args, **kwargs):
+        print("\n╔═══════════════════════════════════════════╗")
+        print("║             CUSTOMER PORTAL               ║")
+        print("╚═══════════════════════════════════════════╝")
+        func(*args, **kwargs)
+    return wrapper
 
 def pretty_admin(func):
     def wrapper(*args, **kwargs):
-        print("╔═══════════════════════════════════════════╗")
-        print("║              ADMIN INTERFACE              ║")
+        print("\n╔═══════════════════════════════════════════╗")
+        print("║               ADMIN PORTAL                ║")
         print("╚═══════════════════════════════════════════╝")
         func(*args, **kwargs)
-        print()
-
     return wrapper
 
 # Main function
 @pretty_print
 def main():
     banking_system = BankingSystem()
-    banking_system.load_customers_from_file()
-
+    
     while True:
-        print("\n*** Main Interface ***")
-        print("Press[1] for Customer Login")
-        print("Press[2] for Admin Login")
-        print("Press[3] for Quit")
-        try:
-            choice = input("Enter your choice: ")
-        except ValueError:
-            print("Please enter a valid choice!")
-            continue
-
+        print("\nMAIN MENU")
+        print("1. Customer Login")
+        print("2. Customer Registration") 
+        print("3. Admin Login")
+        print("4. Exit")
+        
+        choice = input("Enter your choice (1-4): ")
+        
         if choice == "1":
-            print("\n Press '1' to Login to your account\n Press '2' to Register Yourself.")
-            choice2 = int(input())
-            if choice2 == 1:
-                customer_id = input("Enter your Account ID: ")
-                customer_password = input("Enter your password: ")
-                customerA = banking_system.customer_login(customer_id, customer_password)
-                if customerA:
-                    customer_interface(banking_system, customerA)
-                else:
-                    print("Invalid username or password.")
-            elif choice2 == 2:
-                print('password must be :\n *six characters in length\n *must contain at least one digit\n')
-                password = input("Set password: ")
-                first_name = input("Enter first name: ")
-                last_name = input("Enter last name: ")
-                address = input("Enter address: ")
-                if banking_system.create_customer(password, first_name, last_name, address):
-                    print("Registered successfully.")
-                else:
-                    print("Failed to create customer. Please check password requirements.")
-            else:
-                print("\nPlease Enter Right Choice!!")
-
+            customer_login_interface(banking_system)
         elif choice == "2":
-            admin_interface(banking_system)
-
+            customer_registration_interface(banking_system)
         elif choice == "3":
-            print("Goodbye!!")
+            admin_interface(banking_system)
+        elif choice == "4":
+            print("Thank you for using our banking system! Goodbye!")
             break
         else:
-            print("Invalid choice. Please try again.")
+            print("Invalid choice! Please try again.")
 
-
-# Update the customer_interface function
-@pretty_print_interface
-@pretty
-def customer_interface(banking_system, customer):
-    print(f"\nWelcome, {customer.first_name} {customer.last_name}!")
-
-    while True:
-        try:
-            print("\nCustomer Interface")
-            print("1. Create Account")
-            print("2. Deposit")
-            print("3. Withdraw")
-            print("4. Balance Enquiry")
-            print("5. Transfer Funds")
-            print("6. Back")
-            choice = input("Enter your choice: ")
-
-            if choice == "1":
-                banking_system.prompt_account_type(customer)
-
-            elif choice == "2":
-                account = select_account(customer)
-                if account:
-                    amount = float(input("Enter amount to deposit: "))
-                    account.deposit(amount)
-                    print("Amount deposited successfully.")
-
-            elif choice == "3":
-                account = select_account(customer)
-                if account:
-                    amount = float(input("Enter amount to withdraw: "))
-                    account.withdraw(amount)
-                    print("Amount withdrawn successfully.")
-
-            elif choice == "4":
-                account = select_account(customer)
-                if account:
-                    account.balance_enquiry()
-
-            elif choice == "5":
-                account = select_account(customer)
-                if account:
-                    recipient_username = input("Enter recipient ID: ")
-                    recipient_customer = banking_system.select_customer_by_username(recipient_username)
-                    if recipient_customer:
-                        recipient_account = select_account(recipient_customer)
-                        if recipient_account:
-                            amount = float(input("Enter amount to transfer: "))
-                            account.transfer_funds(recipient_account, amount)
-                            print("Funds transferred successfully.")
-                        else:
-                            print("Recipient account not found.")
-                    else:
-                        print("Recipient username not found.")
-
-            elif choice == "6":
-                print("Going back to the main menu.")
-                break
-
-            else:
-                print("Invalid choice. Please try again.")
-        except ValueError:
-            print("Invalid input. Please enter a valid choice or amount.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
-
-# Update the admin_interface function
-@pretty_admin
-@pretty_print_interface
-def admin_interface(banking_system):
-    # username = input("Enter admin username: ")
-    password = input("Enter admin password: ")
-    if banking_system.admin_login(password):
-        while True:
-            print("\nAdmin Interface")
-            print("1. Create Customer")
-            print("2. Print All Customers Information")
-            print("3. balance Enquiry")
-            print("4. transaction history")
-            print("5. Transfer funds")
-            print("6. Change admin password")
-            print("7. Back")
-            try:
-                choice = input("Enter your choice: ")
-            except ValueError:
-                print("Please enter a valid choice.")
-                continue
-
-            if choice == "1":
-                print('password must be :\n *six characters in length\n *must contain at least one digit\n')
-                password = input("Enter password: ")
-                first_name = input("Enter first name: ")
-                last_name = input("Enter last name: ")
-                address = input("Enter address: ")
-                if banking_system.create_customer( password, first_name, last_name, address):
-                    print("Customer created successfully.")
-                else:
-                    print("Failed to create customer. Please check password requirements.")
-
-            elif choice == "2":
-                banking_system.print_all_customers_info()
-
-            elif choice == "3":
-                ID = input("Enter customer Account ID: ")
-                customer = banking_system.select_customer_by_username(ID)
-                if customer:
-                    account = select_account(customer)
-                    if account:
-                        account.balance_enquiry()
-
-            elif choice == "4":
-                with open("Trasaction_history.txt", "r") as f:
-                    g = f.readlines()
-                for line in g:
-                    print(line)
-
-            elif choice == "5":
-                ID = input("Enter customer Account ID: ")
-                customer = banking_system.select_customer_by_username(ID)
-                if customer:
-                    account = select_account(customer)
-                    if account:
-                        recipient_username = input("Enter recipient ID: ")
-                        recipient_customer = banking_system.select_customer_by_username(recipient_username)
-                        if recipient_customer:
-                            recipient_account = select_account(recipient_customer)
-                            if recipient_account:
-                                amount = float(input("Enter amount to transfer: "))
-                                account.transfer_funds(recipient_account, amount)
-                                print("Funds transferred successfully.")
-                        else:
-                            print("Recipient username not found.")
-
-            elif choice == "6":
-                banking_system.change_admin_password()
-
-            elif choice == "7":
-                print("Going back to the main menu.")
-                break
-
-            else:
-                print("Invalid choice. Please try again.")
-
+def customer_login_interface(banking_system):
+    print("\n--- CUSTOMER LOGIN ---")
+    customer_id = input("Enter Customer ID: ")
+    password = input("Enter Password: ")
+    
+    customer = banking_system.customer_login(customer_id, password)
+    if customer:
+        customer_interface(banking_system, customer)
     else:
-        print("Invalid username or password.")
+        print("Invalid Customer ID or Password!")
+
+def customer_registration_interface(banking_system):
+    print("\n--- CUSTOMER REGISTRATION ---")
+    print("Password must be:")
+    print("- At least 6 characters long") 
+    print("- Contain at least one digit")
+    
+    password = input("Set your password: ")
+    first_name = input("Enter first name: ")
+    last_name = input("Enter last name: ")
+    address = input("Enter address: ")
+    
+    if banking_system.create_customer(password, first_name, last_name, address):
+        print("Registration successful! You can now login.")
+    else:
+        print("Registration failed! Please check password requirements.")
+
+@pretty_customer
+def customer_interface(banking_system, customer):
+    print(f"Welcome, {customer.first_name} {customer.last_name}!")
+    
+    while True:
+        print("\nCUSTOMER MENU")
+        print("1. Create New Account")
+        print("2. Deposit Money")
+        print("3. Withdraw Money") 
+        print("4. Check Balance")
+        print("5. Transfer Funds")
+        print("6. View My Transactions")
+        print("7. Logout")
+        
+        choice = input("Enter your choice (1-7): ")
+        
+        if choice == "1":
+            banking_system.prompt_account_type(customer)
+        elif choice == "2":
+            account = select_account(customer)
+            if account:
+                amount = float(input("Enter deposit amount: "))
+                account.deposit(amount)
+        elif choice == "3":
+            account = select_account(customer)
+            if account:
+                amount = float(input("Enter withdrawal amount: "))
+                account.withdraw(amount)
+        elif choice == "4":
+            account = select_account(customer)
+            if account:
+                account.balance_enquiry()
+        elif choice == "5":
+            account = select_account(customer)
+            if account:
+                recipient_id = input("Enter recipient Customer ID: ")
+                recipient = banking_system.select_customer_by_id(recipient_id)
+                if recipient:
+                    recipient_account = select_account(recipient)
+                    if recipient_account:
+                        amount = float(input("Enter transfer amount: "))
+                        account.transfer_funds(recipient_account, amount)
+                    else:
+                        print("Recipient has no accounts!")
+                else:
+                    print("Recipient not found!")
+        elif choice == "6":
+            banking_system.view_transaction_history(customer.id)
+        elif choice == "7":
+            print("Logged out successfully!")
+            break
+        else:
+            print("Invalid choice!")
+
+@pretty_admin
+def admin_interface(banking_system):
+    password = input("Enter admin password: ")
+    
+    if not banking_system.admin_login(password):
+        print("Invalid admin password!")
+        return
+        
+    print("Admin login successful!")
+    
+    while True:
+        print("\nADMIN MENU")
+        print("1. View All Customers")
+        print("2. Create New Customer")
+        print("3. View Transaction History")
+        print("4. Change Admin Password")
+        print("5. Logout")
+        
+        choice = input("Enter your choice (1-5): ")
+        
+        if choice == "1":
+            banking_system.print_all_customers_info()
+        elif choice == "2":
+            customer_registration_interface(banking_system)
+        elif choice == "3":
+            print("\n1. View All Transactions")
+            print("2. View Specific Customer Transactions")
+            sub_choice = input("Enter choice (1-2): ")
+            if sub_choice == "1":
+                banking_system.view_transaction_history()
+            elif sub_choice == "2":
+                customer_id = input("Enter Customer ID: ")
+                banking_system.view_transaction_history(customer_id)
+            else:
+                print("Invalid choice!")
+        elif choice == "4":
+            banking_system.change_admin_password()
+        elif choice == "5":
+            print("Admin logged out!")
+            break
+        else:
+            print("Invalid choice!")
 
 if __name__ == "__main__":
+    # Create necessary CSV files if they don't exist
+    if not os.path.exists("admin.csv"):
+        with open("admin.csv", "w", newline='') as file:
+            writer = csv.DictWriter(file, fieldnames=['password'])
+            writer.writeheader()
+            writer.writerow({'password': 'admin123'})
+    
     main()
-
-
-
-h
